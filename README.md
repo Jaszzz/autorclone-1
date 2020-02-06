@@ -8,15 +8,25 @@ A Python script which uses Google Cloud Service Accounts to bypass:
 - manipulates rclone remotes to bypass the 400k file count limit per Share Drives (formerly Team Drives),
 - and bypasses the user rate limit per project respective of the Service Accounts
 
-This repo uses [rclone](https://rclone.org) to **transfer files from local/remote disk to Google Drive or Team/Share Drive**.
-
 ## Requirements for using the script
 
 * Python ^3.4
-* Rclone ^1.41 (To support Service Account feature.)
+* [rclone](https://rclone.org) ^1.41 (To support Service Account feature.)
 
 ## Setup
-- ...
+### Config ###
+The rclone config (`rclone.conf`) currently needs to have to-be-unionized remotes formatted with `_[INTEGER]` following its title. For example: `RCLONE_UNION_NAME` is the title which will be used across multiple Team Drives ("TDs") and will be known as the Union Drive. Each Team Drive ("TD") to be used under that Union Drive must be numbered *sequentially*. This script will currently fail to recognize any TD after the first failure to follow a 1,2,3 sequence.
+```
+[RCLONE_UNION_NAME_1]
+[snip]
+
+[RCLONE_UNION_NAME_2]
+[snip]
+
+[RCLONE_UNION_NAME_3]
+[snip]
+```
+To be clear, if 1 and 3 are present within `rclone.conf` only 1 will currently be recognized. And subsequently, this script *will* fail since rclone does not allow for single remote unions.
 
 ## Usage examples
 ```
