@@ -14,3 +14,9 @@ This repo uses [rclone](https://rclone.org) to **transfer files from local/remot
 
 ## Setup
 - ...
+
+## Rough Todo
+- Allow multiple rclone unions to be generated for subprocess env vars
+- Set universal location defaults for argparse; eg. rclone binary, rclone config, etc
+- Properly encapsulate log cleanup in with-statement to prevent leaving a mess upon SIGINT or otherwise
+- ...
