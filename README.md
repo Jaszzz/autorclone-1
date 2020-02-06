@@ -15,6 +15,25 @@ This repo uses [rclone](https://rclone.org) to **transfer files from local/remot
 ## Setup
 - ...
 
+## Usage examples
+```
+./autorclone.py \
+  --service-accounts-dir "/path/to/rclone_service_account_jsons" \
+  --rclone-bin "/path/to/rclone_binary" \
+  --rclone-config "/path/to/rclone.conf" \
+  --td-rotate-name "RCLONE_UNION_NAME" \
+  "copy RANDOM_REMOTE:/ RCLONE_UNION_NAME:/ --tpslimit=1 --transfers=1 --checkers=1"
+```
+```
+./autorclone.py \
+  --service-accounts-dir "/path/to/rclone_service_account_jsons" \
+  --rclone-bin "/path/to/rclone_binary" \
+  --rclone-config "/path/to/rclone.conf" \
+  --td-rotate-name "RCLONE_UNION_NAME" \
+  "copy RANDOM_REMOTE:/ RCLONE_UNION_NAME:/ --tpslimit=1 --transfers=1 --checkers=1" \
+  "copy DIFF_REMOTE:/ RCLONE_UNION_NAME:/ --tpslimit=1 --transfers=1 --checkers=1";
+```
+
 ## Rough Todo
 - Allow multiple rclone unions to be generated for subprocess env vars
 - Set universal location defaults for argparse; eg. rclone binary, rclone config, etc
