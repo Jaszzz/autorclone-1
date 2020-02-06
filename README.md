@@ -3,7 +3,10 @@ Forked from https://github.com/Rhilip/AutoRclone
 
 # Autorclone 
 
-A Python script which uses Google Cloud Service Accounts to bypass the 750GB upload file size limit and manipulates rclone remotes to bypass the 400k file count limit per Share Drives (formerly Team Drives) on Google Drive.
+A Python script which uses Google Cloud Service Accounts to bypass:
+- 750GB upload file size limit,
+- manipulates rclone remotes to bypass the 400k file count limit per Share Drives (formerly Team Drives),
+- and bypasses the user rate limit per project respective of the Service Accounts
 
 This repo uses [rclone](https://rclone.org) to **transfer files from local/remote disk to Google Drive or Team/Share Drive**.
 
