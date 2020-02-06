@@ -50,7 +50,8 @@ rclone_switch_rules = {
     'error_user_rate_limit': True,  # Rclone ????rate limit??
     'zero_transferred_between_check_interval': False,  # 100???????rclone?????0
     'all_transfers_in_zero': False,  # ????transfers??size??0
-    'error_td_file_limit': True
+    'error_td_file_limit': True,
+    'error_project_quota': True
 }
 
 # ???????
@@ -578,6 +579,15 @@ for command in args.commands:
                 should_switch = 0
                 switch_reason = 'Switch Reason: '
                 switch_teamdrives = False
+                switch_projet_quota = False
+
+                # Project quota:
+                if rclone_switch_rules.get('error_project_quota', False):
+                    rclone_log_tail = get_rclone_log_tail(rclone_log_path, 20)
+                    if rclone_log_tail.find('Rate of requests for user exceed configured project quota') > -1:
+                        switch_project_quota = True
+                        should_switch = (4 - should_switch) + should_switch
+                        switch_reason += 'Rule `error_project_quota` hit, '
 
                 # TD Switch
                 if rclone_switch_rules.get('error_td_file_limit', False):
