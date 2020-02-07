@@ -43,7 +43,6 @@ check_interval = 10  # ???????rclone rc core/stats?????
 # rclone????????
 td_switch_count = 0
 sa_switch_count = 0
-sa_switch_limit = 1000
 switch_level = 1  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
 rclone_switch_rules = {
     'up_than_750': False,  # ????????750G
@@ -377,15 +376,9 @@ for command in args.commands:
     # Fill out rclone command from arg
     cmd_rclone = "{} {}".format(args.rclone_bin, command)
 
-    # Debug
-    logger.info("DEBUG MESSAGE PRE LOCK")
-
     # Run with lock on instance to make clean break
     instance_check = filelock.FileLock(instance_lock_path)
     with instance_check.acquire(timeout=0):
-
-        # Debug
-        logger.info("DEBUG MESSAGE POST LOCK")
 
         break_for_next_cmd = False
 
@@ -445,9 +438,6 @@ for command in args.commands:
         while True:
             if break_for_next_cmd:
                 break
-
-            #if sa_switch_count == sa_switch_limit:
-            #    break
 
             logger.info('Switch to next SA..........')
             last_sa = current_sa = get_next_sa_json_path(last_sa)
