@@ -43,7 +43,7 @@ check_interval = 10  # ???????rclone rc core/stats?????
 # rclone????????
 td_switch_count = 0
 sa_switch_count = 0
-sa_switch_limit = 3
+sa_switch_limit = 1000
 switch_level = 1  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
 rclone_switch_rules = {
     'up_than_750': False,  # ????????750G
@@ -446,8 +446,8 @@ for command in args.commands:
             if break_for_next_cmd:
                 break
 
-            if sa_switch_count == sa_switch_limit:
-                break
+            #if sa_switch_count == sa_switch_limit:
+            #    break
 
             logger.info('Switch to next SA..........')
             last_sa = current_sa = get_next_sa_json_path(last_sa)
@@ -483,9 +483,6 @@ for command in args.commands:
                 logger.warning('Injecting Team Drive rotation...')
                 generated_team_drive_union = generate_rclone_union_from_config(td_rotate_name,td_switch_count)
                 proc_env.update(generated_team_drive_union)
-
-            #print(proc_env)
-            #exit(1)
 
             # ???subprocess?rclone
             proc_log = open(rclone_log_path, 'a')
@@ -547,7 +544,6 @@ for command in args.commands:
 
                         # print the last 20 lines of log
                         logger.info('Providing the last 20 lines from rclone log...')
-                        print("##########WHERE IS LOG???")
                         print(get_rclone_log_tail(rclone_log_path, 20))
 
                         # if not multiple commands
@@ -661,9 +657,11 @@ for command in args.commands:
                     logger.debug(switch_level) 
 
                     break
-
+                
                 time.sleep(check_interval)
-        
+
+            # Ensure rclone process is dead for next SA
+            force_kill_rclone_subproc_by_parent_pid(proc.pid) 
 
 print(get_rclone_log_tail(rclone_log_path, 20))
 
