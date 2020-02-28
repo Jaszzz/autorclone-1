@@ -334,16 +334,13 @@ def switch_sa_by_config(cur_sa):
 def get_email_from_sa(sa):
     return json.load(open(sa, 'r'))['client_email']
 
-
 # ????Rclone
-def force_kill_rclone_subproc_by_parent_pid(sh_pid):
-    if psutil.pid_exists(sh_pid):
-        sh_proc = psutil.Process(sh_pid)
-        logger.info('Get The Process information - pid: %s, name: %s' % (sh_pid, sh_proc.name()))
-        for child_proc in sh_proc.children():
-            if child_proc.name().find('rclone') > -1:
-                logger.info('Force Killed rclone process which pid: %s' % child_proc.pid)
-                child_proc.kill()
+def force_kill_rclone_subproc(pid):
+    if psutil.pid_exists(pid):
+        proc = psutil.Process(pid)
+        logger.info('Get the rclone process information - pid: %s, name: %s' % (pid, proc.name()))
+        logger.info('Force killed rclone process which pid: %s' % proc.pid)
+        proc.kill()
 
 parser = argparse.ArgumentParser(description="Process command line arguments for " + __file__)
 parser.add_argument('--service-accounts-dir', type=str, default="/home/chamber/Desktop/srv_config/config_files/sa_json", nargs='?', help='service account JSON directory')
@@ -398,7 +395,7 @@ for command in args.commands:
         if 'last_pid' in instance_config:
             last_pid = instance_config.get('last_pid')
             logger.debug('Last PID exist, Start to check if it is still alive')
-            force_kill_rclone_subproc_by_parent_pid(last_pid)
+            force_kill_rclone_subproc(last_pid)
 
         # ??????sa??????,?????,??sa_jsons
         # ?????????????750G???
@@ -489,13 +486,14 @@ for command in args.commands:
             # ?????? force_kill_rclone_subproc_by_parent_pid(sh_pid) ????rclone
             if proc.poll() is None:
                 write_config('last_pid', proc.pid)
-                logger.info('Run Rclone command Success in pid %s' % (proc.pid + 1))
+                logger.info('Run Rclone command Success in pid %s' % (proc.pid))
                 rc_port = get_listen_port(proc.pid)
 
             # if pid has already died
             if proc.poll() != None:
                 logger.warn("Premature death of process.")
 
+                force_kill_rclone_subproc(proc.pid)
                 proc.kill()
 
                 # remove SA from track log
@@ -510,7 +508,7 @@ for command in args.commands:
                     exit(1)
 
 
-            # ????? `rclone rc core/stats` ???????
+            # rclone rc core/stats
             cnt_error = 0
             cnt_403_retry = 0
             cnt_transfer_last = 0
@@ -549,11 +547,11 @@ for command in args.commands:
                 else:
                     cnt_error = 0
 
-                # ?? `rclone rc core/stats` ??
+                # decode rclone rc core/stats
                 response_json = json.loads(response.decode('utf-8').replace('\0', ''))
                 cnt_transfer = response_json.get('bytes', 0)
 
-                # ??????
+                # print 
                 logger.info('Transfer Status - Upload: %s GiB, Avg upspeed: %s MiB/s, Transfered: %s.' % (
                     round(response_json.get('bytes', 0) / pow(1024, 3),2),
                     round(response_json.get('speed', 0) / pow(1024, 2),2),
@@ -627,7 +625,7 @@ for command in args.commands:
                 # SA or TD Switch: Process the switch
                 if should_switch >= switch_level:
                     logger.info("Switch triggered: {}".format(switch_reason))
-                    force_kill_rclone_subproc_by_parent_pid(proc.pid) 
+                    force_kill_rclone_subproc(proc.pid) 
 
                     if switch_teamdrives:
                         td_switch_count += 1
@@ -642,16 +640,12 @@ for command in args.commands:
                         # remove SA from track log
                         update_track_log(current_sa, remove=True)
 
-                    # Debug
-                    logger.debug(should_switch)
-                    logger.debug(switch_level) 
-
                     break
                 
                 time.sleep(check_interval)
 
             # Ensure rclone process is dead for next SA
-            force_kill_rclone_subproc_by_parent_pid(proc.pid) 
+            force_kill_rclone_subproc(proc.pid) 
 
 print(get_rclone_log_tail(rclone_log_path, 20))
 
