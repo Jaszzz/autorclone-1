@@ -24,9 +24,10 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 '''
-2. Correct failed rc connection by checking for log output (eg. complete, 100%)
-3. Investigate log not printing on rc check fail, esp. on seedbox
 5. Change logging and tracking into "with" operation to ensure SIGINT is handled correctly (eg. deleting/updating files)
+6. User rate limit error detection causing premature TD switch; might use combination of zero transferred and user error
+7. Randomize selection of service account JSON files; avoid projects temp banned.
+8. Keep log of temp banned projects from ratelimit
 '''
 
 # ------------?????------------------
@@ -38,19 +39,19 @@ user_home = str(Path.home())
 
 # ??rclone?? (s)
 check_after_start = 30  # ???rclone???,??xxs??????rclone??,?? rclone rc core/stats ????
-check_interval = 10  # ???????rclone rc core/stats?????
+check_interval = 5  # ???????rclone rc core/stats?????
 
 # rclone????????
 td_switch_count = 0
 sa_switch_count = 0
-switch_level = 1  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
+switch_level = 6  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
 rclone_switch_rules = {
-    'up_than_750': False,  # ????????750G
-    'error_user_rate_limit': True,  # Rclone ????rate limit??
-    'zero_transferred_between_check_interval': False,  # 100???????rclone?????0
-    'all_transfers_in_zero': False,  # ????transfers??size??0
-    'error_td_file_limit': True,
-    'error_project_quota': True
+    'up_than_750': False,  # ????????750G                      # May cause premature switch if actively transfering
+    'error_user_rate_limit': False,  # Rclone ????rate limit?? # Might be triggered by warning instead of actual error
+    'zero_transferred_between_check_interval': True,           # Doesn't work well with long queuing process
+    'all_transfers_in_zero': True,  # ????transfers??size??0   # Also doesn't work well with long queuing process
+    'error_td_file_limit': True,                               # Will also switch the SA with the TD
+    'error_project_quota': False                               # Can trigger from a warning instead of an actual error
 }
 
 # ???????
@@ -311,15 +312,27 @@ def write_config(name, value):
 
 # ?????Service Account Credentials JSON file path
 def get_next_sa_json_path(_last_sa):
-    if _last_sa not in sa_jsons:  # ?????????sa_json_path,?????
-        next_sa_index = 0
-    else:
-        _last_sa_index = sa_jsons.index(_last_sa)
-        next_sa_index = _last_sa_index + 1
+
+    # Give random SA not already used;
+    # this method won't produce an IndexError
+    # like the previous index-based method; But it also won't stop
+    # the script if all SAs have errored
+    next_sa = random.choice(sa_jsons)
+    while next_sa == _last_sa:
+        next_sa = random.choice(sa_jsons)
+    return next_sa
+
+    # 
+    #if _last_sa not in sa_jsons:
+    #    next_sa_index = 0
+    #else:
+    # Initial SA picked; new random one.
+    #    _last_sa_index = sa_jsons.index(_last_sa)
+    #    next_sa_index = _last_sa_index + (1)
     # ???????????
-    if next_sa_index > len(sa_jsons):
-        next_sa_index = next_sa_index - len(sa_jsons)
-    return sa_jsons[next_sa_index]
+    #if next_sa_index > len(sa_jsons):
+    #    next_sa_index = next_sa_index - len(sa_jsons)
+    #return sa_jsons[next_sa_index]
 
 
 def switch_sa_by_config(cur_sa):
@@ -332,6 +345,7 @@ def switch_sa_by_config(cur_sa):
 
 
 def get_email_from_sa(sa):
+    logger.info('Reading SA: {}'.format(sa))
     return json.load(open(sa, 'r'))['client_email']
 
 # ????Rclone
@@ -421,7 +435,11 @@ for command in args.commands:
 
         if cmd_rclone.find('--drive-server-side-across-configs') == -1:
             logger.warning('Lost important param `--drive-server-side-across-configs` in rclone commands; Autoadd it.')
-            cmd_rclone += ' --drive-server-side-across-configs' 
+            cmd_rclone += ' --drive-server-side-across-configs'
+
+        if cmd_rclone.find('--drive-acknowledge-abuse') == -1:
+            logger.warning('Lost important param `--drive-acknowledge-abuse` in rclone commands; Autoadd it.')
+            cmd_rclone += ' --drive-acknowledge-abuse'
 
         if cmd_rclone.find('--rc') == -1:
             logger.warning('Lost important param `--rc --rc-addr` in rclone commands; Autoadd it.')
@@ -486,7 +504,7 @@ for command in args.commands:
             # ?????? force_kill_rclone_subproc_by_parent_pid(sh_pid) ????rclone
             if proc.poll() is None:
                 write_config('last_pid', proc.pid)
-                logger.info('Run Rclone command Success in pid %s' % (proc.pid))
+                logger.info('Run rclone command Success in pid %s' % (proc.pid))
                 rc_port = get_listen_port(proc.pid)
 
             # if pid has already died
@@ -565,20 +583,27 @@ for command in args.commands:
                 switch_teamdrives = False
                 switch_projet_quota = False
 
-                # Project quota:
+                # DEBUG: rc output
+                #logger.debug(response_json)
+
+                # The whole point of the *individual* if-statements is to add up
+                # points that signify when it's time to close the instance... otherwise rclone would run
+                # indefinitely.
+ 
+                # Project Quota Switch:
                 if rclone_switch_rules.get('error_project_quota', False):
                     rclone_log_tail = get_rclone_log_tail(rclone_log_path, 20)
                     if rclone_log_tail.find('Rate of requests for user exceed configured project quota') > -1:
                         switch_project_quota = True
-                        should_switch = (4 - should_switch) + should_switch
+                        should_switch = (switch_level - should_switch) + should_switch
                         switch_reason += 'Rule `error_project_quota` hit, '
 
-                # TD Switch
+                # TD Switch: Also switches the SA
                 if rclone_switch_rules.get('error_td_file_limit', False):
                     last_error = response_json.get('lastError', '')
                     if last_error.find('teamDriveFileLimitExceeded') > -1:
                         switch_teamdrives = True
-                        should_switch = (4 - should_switch) + should_switch
+                        should_switch = (switch_level - should_switch) + should_switch
                         switch_reason += 'Rule `error_td_file_limit` hit, '
 
                 # SA Switch: 750 GB+ 
@@ -592,7 +617,7 @@ for command in args.commands:
                     if cnt_transfer - cnt_transfer_last == 0:  # ???
                         cnt_403_retry += 1
                         if cnt_403_retry % 10 == 0:
-                            logger.warning('Rclone seems not transfer in %s checks' % cnt_403_retry)
+                            logger.warning('Rclone has not transferred in %s checks' % cnt_403_retry)
                         if cnt_403_retry >= 100:  # ??100???????
                             should_switch += 1
                             switch_reason += 'Rule `zero_transferred_between_check_interval` hit, '
@@ -622,10 +647,17 @@ for command in args.commands:
                         should_switch += 1
                         switch_reason += 'Rule `all_transfers_in_zero` hit, '
 
-                # SA or TD Switch: Process the switch
+                # Debug
+                logger.info("Should switch count: {}".format(should_switch))
+
+                # SA and/or TD Switch: Process the switch
                 if should_switch >= switch_level:
                     logger.info("Switch triggered: {}".format(switch_reason))
                     force_kill_rclone_subproc(proc.pid) 
+
+                    # print the last 20 lines of log
+                    logger.info('Providing the last 20 lines from rclone log...')
+                    print(get_rclone_log_tail(rclone_log_path, 20))
 
                     if switch_teamdrives:
                         td_switch_count += 1
