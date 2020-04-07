@@ -534,6 +534,11 @@ for command in args.commands:
             while True:
                 try:
                     response = subprocess.check_output('rclone rc --url "http://localhost:{}" core/stats'.format(rc_port), shell=True)
+                except NameError as error:
+                    # This is a temporary fix that needs "100%" check from rclone output
+                    logger.warn("Rclone process died before it could be check. Probably not an issue.")
+                    break_for_next_cmd = True
+                    break
                 except subprocess.CalledProcessError as error:
 
                     # something on checking log file to see if transfers finished instead of failing
