@@ -1,5 +1,10 @@
 #!/usr/bin/python3
 
+"""
+Author: opsoyo
+
+"""
+
 import os
 import re
 import json
@@ -153,7 +158,7 @@ def get_rclone_log_tail(f, n, offset=0):
     max_length,longest_element = max([(len(x),x) for x in lines])
     output = ['{}{}__{}{}{}{}{}\n'.format(
         Back.WHITE, Fore.BLACK, Style.RESET_ALL, Style.BRIGHT, Fore.WHITE, i, Style.RESET_ALL) for i in lines]
-    
+
     section_title = "\n{}{}rclone output:{}\n".format(Back.WHITE,Fore.BLACK,Style.RESET_ALL)
     output.insert(0,section_title)
 
@@ -161,7 +166,7 @@ def get_rclone_log_tail(f, n, offset=0):
         return "".join(output)
     else:
         return "No output available."
-    
+
     time.sleep(1)
 
     return ">>>>>>>>TEST"
@@ -281,7 +286,7 @@ def update_ban_log(sa_file):
         logger.info("Another instance holds the lock for the SA ban log. Waiting 5 seconds...")
         time.sleep(5)
         update_ban_log(sa_file)
-        
+
 
 def get_listen_port(pid):
     bash_cmd = "ss -l -p -n -t"
@@ -322,7 +327,7 @@ def get_next_sa_json_path(_last_sa):
         next_sa = random.choice(sa_jsons)
     return next_sa
 
-    # 
+    #
     #if _last_sa not in sa_jsons:
     #    next_sa_index = 0
     #else:
@@ -520,7 +525,7 @@ for command in args.commands:
                 # print last 20 lines of log
                 logger.info('Providing the last 20 lines from rclone log...')
                 print(get_rclone_log_tail(rclone_log_path, 20))
-                
+
                 # if not multiple commands
                 if len(args.commands) == 1:
                     exit(1)
@@ -574,7 +579,7 @@ for command in args.commands:
                 response_json = json.loads(response.decode('utf-8').replace('\0', ''))
                 cnt_transfer = response_json.get('bytes', 0)
 
-                # print 
+                # print
                 logger.info('Transfer Status - Upload: %s GiB, Avg upspeed: %s MiB/s, Transfered: %s.' % (
                     round(response_json.get('bytes', 0) / pow(1024, 3),2),
                     round(response_json.get('speed', 0) / pow(1024, 2),2),
@@ -594,7 +599,7 @@ for command in args.commands:
                 # The whole point of the *individual* if-statements is to add up
                 # points that signify when it's time to close the instance... otherwise rclone would run
                 # indefinitely.
- 
+
                 # Project Quota Switch:
                 if rclone_switch_rules.get('error_project_quota', False):
                     rclone_log_tail = get_rclone_log_tail(rclone_log_path, 20)
@@ -611,7 +616,7 @@ for command in args.commands:
                         should_switch = (switch_level - should_switch) + should_switch
                         switch_reason += 'Rule `error_td_file_limit` hit, '
 
-                # SA Switch: 750 GB+ 
+                # SA Switch: 750 GB+
                 if rclone_switch_rules.get('up_than_750', False):
                     if cnt_transfer > 750 * pow(1000, 3):  # ??? 750GB ??? 750GiB
                         should_switch += 1
@@ -658,7 +663,7 @@ for command in args.commands:
                 # SA and/or TD Switch: Process the switch
                 if should_switch >= switch_level:
                     logger.info("Switch triggered: {}".format(switch_reason))
-                    force_kill_rclone_subproc(proc.pid) 
+                    force_kill_rclone_subproc(proc.pid)
 
                     # print the last 20 lines of log
                     logger.info('Providing the last 20 lines from rclone log...')
@@ -678,16 +683,16 @@ for command in args.commands:
                         update_track_log(current_sa, remove=True)
 
                     break
-                
+
                 time.sleep(check_interval)
 
             # Ensure rclone process is dead for next SA
-            force_kill_rclone_subproc(proc.pid) 
+            force_kill_rclone_subproc(proc.pid)
 
 print(get_rclone_log_tail(rclone_log_path, 20))
 
 # clean up garbage log
-logger.info('Cleaning up log file garbage.')   
+logger.info('Cleaning up log file garbage.')
 os.remove(instance_lock_path)
 os.remove(instance_config_path)
 os.remove(rclone_log_path)
@@ -707,7 +712,7 @@ os.remove(script_log_file)
 #if __name__ == '__main__':
 #    parser = argparse.ArgumentParser(description="Process command line arguments for " + __file__)
 #    parser.add_argument('-C','--cmd', type=str, required=True, nargs='?', help='rclone command string')
-#    
+#
 #    args = parser.parse_args()
 #
 #    sys.exit(main(args.cmd))
