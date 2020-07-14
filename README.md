@@ -10,8 +10,8 @@ A Python script which uses Google Cloud Service Accounts to bypass:
 
 ## Requirements for using the script
 
-* Python ^3.4
-* [rclone](https://rclone.org) ^1.41 (To support Service Account feature.)
+* Python v3.4+
+* [rclone](https://rclone.org) v1.41+ but not greater than v1.51 per [issue 4416](https://github.com/rclone/rclone/issues/4416)
 
 ## Setup
 ### Config ###
