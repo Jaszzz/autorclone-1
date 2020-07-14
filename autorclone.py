@@ -1,12 +1,5 @@
 #!/usr/bin/python3
 
-"""
-Author: opsoyo
-
-
-.....
-"""
-
 import os
 import re
 import json
@@ -51,14 +44,14 @@ check_interval = 5  # ???????rclone rc core/stats?????
 # rclone????????
 td_switch_count = 0
 sa_switch_count = 0
-switch_level = 6  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
+switch_level = 2  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
 rclone_switch_rules = {
     'up_than_750': False,  # ????????750G                      # May cause premature switch if actively transfering
-    'error_user_rate_limit': False,  # Rclone ????rate limit?? # Might be triggered by warning instead of actual error
+    'error_user_rate_limit': True,  # Rclone ????rate limit?? # Might be triggered by warning instead of actual error
     'zero_transferred_between_check_interval': True,           # Doesn't work well with long queuing process
-    'all_transfers_in_zero': True,  # ????transfers??size??0   # Also doesn't work well with long queuing process
+    'all_transfers_in_zero': False,  # ????transfers??size??0  # Activates immediately after running
     'error_td_file_limit': True,                               # Will also switch the SA with the TD
-    'error_project_quota': False                               # Can trigger from a warning instead of an actual error
+    'error_project_quota': False                               # Will trigger even if server-side activity works, or if genuine low level retry
 }
 
 # ???????
@@ -81,6 +74,9 @@ sa_ban_lock = '/tmp/sa_ban_log.lock'.format(time_id)
 # service account tracking
 sa_track_log = '{}/.autorclone/autoclone_track_log.txt'.format(user_home)
 sa_track_lock = '{}/.autorclone/autoclone_track_log.lock'.format(user_home)
+
+# service account project temp ban log
+sa_project_temp_bans = []
 
 # proc vars
 proc_env = os.environ.copy()
@@ -169,10 +165,6 @@ def get_rclone_log_tail(f, n, offset=0):
     else:
         return "No output available."
 
-    time.sleep(1)
-
-    return ">>>>>>>>TEST"
-
 def is_sa_being_used(sa_file):
     try:
 
@@ -230,6 +222,29 @@ def update_track_log(sa_file, remove=False):
         time.sleep(5)
         update_track_log(sa_file)
 
+def is_project_banned(sa_file):
+    try:
+        with open(sa_file) as saf:
+            saf_data = json.load(saf)
+            saf_project_id = saf_data['project_id']
+            if saf_project_id in sa_project_temp_bans:
+                return True
+    except:
+        logger.warn("Something happened when trying to read SA JSON file.")
+        time.sleep(5)
+        is_project_banned(sa_file)
+
+def add_project_ban(sa_file):
+    try:
+        with open(sa_file) as saf:
+            saf_data = json.load(saf)
+            saf_project_id = saf_data['project_id']
+            sa_project_temp_bans.append(saf_project_id)
+            return True
+    except:
+        logger.warn("Something happened when trying to read SA JSON file.")
+        time.sleep(5)
+        add_project_banned(sa_file)
 
 
 def is_sa_banned(sa_file):
@@ -466,6 +481,13 @@ for command in args.commands:
             write_config('last_sa', current_sa)
             logger.info('Get SA information, file: %s , email: %s' % (current_sa, get_email_from_sa(current_sa)))
 
+            # avoid using temp banned SA Projects which haven't waited 24 hours
+            if is_project_banned(current_sa):
+                logger.warn("Project ID still under 24-hour ban.")
+                continue
+            else:
+                logger.info("Project ID is not under a ban.")
+
             # avoid using banned SAs which haven't waited 24 hours
             if is_sa_banned(current_sa):
                 logger.warn("Service account still under 24-hour ban.")
@@ -538,6 +560,14 @@ for command in args.commands:
             cnt_403_retry = 0
             cnt_transfer_last = 0
             cnt_get_rate_limit = False
+
+            # SA Switch Vars
+            should_exit = 0
+            should_switch = 0
+            switch_reason = 'Switch Reason: '
+            switch_teamdrives = False
+            switch_projects_temp_bans = []
+
             while True:
                 try:
                     response = subprocess.check_output('rclone rc --url "http://localhost:{}" core/stats'.format(rc_port), shell=True)
@@ -588,13 +618,6 @@ for command in args.commands:
                     response_json.get('transfers', 0)
                 ))
 
-                # SA Switch Vars
-                should_exit = 0
-                should_switch = 0
-                switch_reason = 'Switch Reason: '
-                switch_teamdrives = False
-                switch_projet_quota = False
-
                 # DEBUG: rc output
                 #logger.debug(response_json)
 
@@ -606,8 +629,7 @@ for command in args.commands:
                 if rclone_switch_rules.get('error_project_quota', False):
                     rclone_log_tail = get_rclone_log_tail(rclone_log_path, 20)
                     if rclone_log_tail.find('Rate of requests for user exceed configured project quota') > -1:
-                        switch_project_quota = True
-                        should_switch = (switch_level - should_switch) + should_switch
+                        should_switch = should_switch + 0.001
                         switch_reason += 'Rule `error_project_quota` hit, '
 
                 # TD Switch: Also switches the SA
@@ -625,26 +647,31 @@ for command in args.commands:
                         switch_reason += 'Rule `up_than_750` hit, '
 
                 # SA Switch: Zero transferred between check interval
+                #            and no server-side progress (still developing)
                 if rclone_switch_rules.get('zero_transferred_between_check_interval', False):
                     if cnt_transfer - cnt_transfer_last == 0:  # ???
                         cnt_403_retry += 1
                         if cnt_403_retry % 10 == 0:
                             logger.warning('Rclone has not transferred in %s checks' % cnt_403_retry)
-                        if cnt_403_retry >= 100:  # ??100???????
+                        if cnt_403_retry >= 2000:  # ??100???????
                             should_switch += 1
                             switch_reason += 'Rule `zero_transferred_between_check_interval` hit, '
                     else:
                         cnt_403_retry = 0
                     cnt_transfer_last = cnt_transfer
 
-                # SA Switch: Ratelimit exceed
+                # SA Switch: Ratelimit exceeded
                 if rclone_switch_rules.get('error_user_rate_limit', False):
                     last_error = response_json.get('lastError', '')
                     if last_error.find('userRateLimitExceeded') > -1:
                         should_switch += 1
                         switch_reason += 'Rule `error_user_rate_limit` hit, '
 
+                # SA Switch: Ratelimit exceeded and zero transferred between checks
+                # ...
+
                 # SA Switch: All transfers in zero
+                #            and no server-side progress (still developing)
                 if rclone_switch_rules.get('all_transfers_in_zero', False):
                     graceful = True
                     if response_json.get('transferring', False):
@@ -670,6 +697,10 @@ for command in args.commands:
                     # print the last 20 lines of log
                     logger.info('Providing the last 20 lines from rclone log...')
                     print(get_rclone_log_tail(rclone_log_path, 20))
+
+                    # Add project ID to temp ban list
+                    if 'error_project_quota' in switch_reason:
+                        add_project_ban(current_sa)
 
                     if switch_teamdrives:
                         td_switch_count += 1
