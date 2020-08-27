@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 import json
 import time
 import glob
@@ -11,102 +12,36 @@ import subprocess
 import configparser
 import argparse
 import filelock
-import sys
+import signal
 import shlex
 import socket
 import hashlib
 import random
 import psutil
 import collections
+import signal
+import datetime
 from contextlib import closing
 from colorama import Back, Fore, Style
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
-'''
-5. Change logging and tracking into "with" operation to ensure SIGINT is handled correctly (eg. deleting/updating files)
-6. User rate limit error detection causing premature TD switch; might use combination of zero transferred and user error
-7. Randomize selection of service account JSON files; avoid projects temp banned.
-8. Keep log of temp banned projects from ratelimit
-'''
+def signal_handler(sig, frame):
+    if sig == signal.SIGINT:
+        logger.critical('Program interrupted by SIGINT.')
+        log_cleanup()
+        sys.exit()
 
-# ------------?????------------------
+def log_cleanup():
+    logger.info('Cleaning up log file garbage.')
+    logs = [instance_lock_path, instance_config_path, rclone_log_path, script_log_file]
+    for log in logs:
+       try:
+           os.remove(log)
+       except FileNotFoundError:
+           pass
 
-time_id = '{}'.format(int(time.time()))
-
-# system and user
-user_home = str(Path.home())
-
-# ??rclone?? (s)
-check_after_start = 30  # ???rclone???,??xxs??????rclone??,?? rclone rc core/stats ????
-check_interval = 5  # ???????rclone rc core/stats?????
-
-# rclone????????
-td_switch_count = 0
-sa_switch_count = 0
-switch_level = 2  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
-rclone_switch_rules = {
-    'up_than_750': False,  # ????????750G                      # May cause premature switch if actively transfering
-    'error_user_rate_limit': True,  # Rclone ????rate limit?? # Might be triggered by warning instead of actual error
-    'zero_transferred_between_check_interval': True,           # Doesn't work well with long queuing process
-    'all_transfers_in_zero': False,  # ????transfers??size??0  # Activates immediately after running
-    'error_td_file_limit': True,                               # Will also switch the SA with the TD
-    'error_project_quota': False                               # Will trigger even if server-side activity works, or if genuine low level retry
-}
-
-# ???????
-instance_lock_path = '/tmp/autorclone_{}.lock'.format(time_id)
-instance_config_path = '/tmp/autorclone_{}.conf'.format(time_id)
-
-# ???????
-script_log_file = '/tmp/autorclone_{}.log'.format(time_id)
-logging_datefmt = "%m/%d/%Y %I:%M:%S %p"
-logging_format = "%(asctime)s - %(levelname)s - %(funcName)s - %(message)s"
-
-# rclone runtime configuration
-rclone_bwlimit = "--bwlimit 4M" # not in use
-rclone_log_path = "/tmp/rclone_{}.log".format(time_id)
-
-# service account ban log
-sa_ban_log = '{}/.autorclone/autoclone_ban_log.txt'.format(user_home)
-sa_ban_lock = '/tmp/sa_ban_log.lock'.format(time_id)
-
-# service account tracking
-sa_track_log = '{}/.autorclone/autoclone_track_log.txt'.format(user_home)
-sa_track_lock = '{}/.autorclone/autoclone_track_log.lock'.format(user_home)
-
-# service account project temp ban log
-sa_project_temp_bans = []
-
-# proc vars
-proc_env = os.environ.copy()
-
-# ------------?????------------------
-
-# ????
-instance_config = {}
-sa_jsons = []
-
-# ????
-logFormatter = logging.Formatter(fmt=logging_format, datefmt=logging_datefmt)
-
-logger = logging.getLogger()
-logger.setLevel(logging.NOTSET)
-while logger.handlers:  # Remove un-format logging in Stream, or all of messages are appearing more than once.
-    logger.handlers.pop()
-
-if script_log_file:
-    fileHandler = RotatingFileHandler(filename=script_log_file, mode='a',
-                                      backupCount=2, maxBytes=5 * 1024 * 1024,
-                                      encoding=None, delay=0)
-    fileHandler.setFormatter(logFormatter)
-    logger.addHandler(fileHandler)
-
-consoleHandler = logging.StreamHandler()
-consoleHandler.setFormatter(logFormatter)
-logger.addHandler(consoleHandler)
-
-def generate_rclone_union_from_config(tdbasename,rotate=False):
+def generate_rclone_union_from_config(tdbasename):
     if not tdbasename:
         return false
 
@@ -127,11 +62,6 @@ def generate_rclone_union_from_config(tdbasename,rotate=False):
     if len(td_collection) == 0:
         logger.critical('Can\'t find section %s in your rclone.conf', (tdbasename))
         exit(1)
-
-    if rotate:
-        d = collections.deque(td_collection)
-        d.rotate(rotate)
-        td_collection = list(d)
 
     td_union_join = " ".join(td_collection)
     td_union_env = {}
@@ -230,7 +160,7 @@ def is_project_banned(sa_file):
             if saf_project_id in sa_project_temp_bans:
                 return True
     except:
-        logger.warn("Something happened when trying to read SA JSON file.")
+        logger.warning("Something happened when trying to read SA JSON file.")
         time.sleep(5)
         is_project_banned(sa_file)
 
@@ -242,7 +172,7 @@ def add_project_ban(sa_file):
             sa_project_temp_bans.append(saf_project_id)
             return True
     except:
-        logger.warn("Something happened when trying to read SA JSON file.")
+        logger.warning("Something happened when trying to read SA JSON file.")
         time.sleep(5)
         add_project_banned(sa_file)
 
@@ -365,7 +295,6 @@ def switch_sa_by_config(cur_sa):
     logger.info('Change SA information in rclone.conf Success')
     print(proc_env)
 
-
 def get_email_from_sa(sa):
     logger.info('Reading SA: {}'.format(sa))
     return json.load(open(sa, 'r'))['client_email']
@@ -378,14 +307,97 @@ def force_kill_rclone_subproc(pid):
         logger.info('Force killed rclone process which pid: %s' % proc.pid)
         proc.kill()
 
+""" ---------------- Main Program Below ---------------- """
+
+'''
+5. Change logging and tracking into "with" operation to ensure SIGINT is handled correctly (eg. deleting/updating files)
+6. User rate limit error detection causing premature TD switch; might use combination of zero transferred and user error
+7. Randomize selection of service account JSON files; avoid projects temp banned.
+8. Keep log of temp banned projects from ratelimit
+'''
+
+# ------------?????------------------
+
+time_id = '{}'.format(int(time.time()))
+
+# system and user
+user_home = str(Path.home())
+
+# ??rclone?? (s)
+check_after_start = 30  # ???rclone???,??xxs??????rclone??,?? rclone rc core/stats ????
+check_interval = 5  # ???????rclone rc core/stats?????
+
+# rclone????????
+td_switch_count = 0
+sa_switch_count = 0
+switch_level = 2  # ?????????,???????????,??????True(???)???,? 1 - 4(max)
+rclone_switch_rules = {
+    'up_than_750': False,  # ????????750G                      # May cause premature switch if actively transfering
+    'error_user_rate_limit': True,  # Rclone ????rate limit?? # Might be triggered by warning instead of actual error
+    'zero_transferred_between_check_interval': True,           # Doesn't work well with long queuing process
+    'all_transfers_in_zero': False,  # ????transfers??size??0  # Activates immediately after running
+    'error_td_file_limit': True,                               # Will also switch the SA with the TD
+    'error_project_quota': False,                              # Will trigger even if server-side activity works, or if genuine low level retry
+    'user_limit_and_zero_data': True
+}
+
+# ???????
+instance_lock_path = '/tmp/autorclone_{}.lock'.format(time_id)
+instance_config_path = '/tmp/autorclone_{}.conf'.format(time_id)
+
+# ???????
+script_log_file = '/tmp/autorclone_{}.log'.format(time_id)
+logging_datefmt = "%m/%d/%Y %I:%M:%S %p"
+logging_format = "%(asctime)s - %(levelname)s - %(funcName)s - %(message)s"
+
+# rclone runtime configuration
+rclone_bwlimit = "--bwlimit 4M" # not in use
+rclone_log_path = "/tmp/rclone_{}.log".format(time_id)
+
+# service account ban log
+sa_ban_log = '{}/.autorclone/autoclone_ban_log.txt'.format(user_home)
+sa_ban_lock = '/tmp/sa_ban_log.lock'.format(time_id)
+
+# service account tracking
+sa_track_log = '{}/.autorclone/autoclone_track_log.txt'.format(user_home)
+sa_track_lock = '{}/.autorclone/autoclone_track_log.lock'.format(user_home)
+
+# service account project temp ban log
+sa_project_temp_bans = []
+
+# proc vars
+proc_env = os.environ.copy()
+
+# ????
+instance_config = {}
+sa_jsons = []
+
+# Initiate logger
+logFormatter = logging.Formatter(fmt=logging_format, datefmt=logging_datefmt)
+logger = logging.getLogger()
+logger.setLevel(logging.NOTSET)
+while logger.handlers:  # Remove un-format logging in Stream, or all of messages are appearing more than once.
+    logger.handlers.pop()
+if script_log_file:
+    fileHandler = RotatingFileHandler(filename=script_log_file, mode='a', backupCount=2, maxBytes=5 * 1024 * 1024, encoding=None, delay=0)
+    fileHandler.setFormatter(logFormatter)
+    logger.addHandler(fileHandler)
+consoleHandler = logging.StreamHandler()
+consoleHandler.setFormatter(logFormatter)
+logger.addHandler(consoleHandler)
+
+# Signal handler
+signal.signal(signal.SIGINT, signal_handler)
+
 parser = argparse.ArgumentParser(description="Process command line arguments for " + __file__)
-parser.add_argument('--service-accounts-dir', type=str, default="/home/chamber/Desktop/srv_config/config_files/sa_json", nargs='?', help='service account JSON directory')
+parser.add_argument('--service-accounts-dir', type=str, default="/home/opsoyo/.config/autorclone/service_accounts", nargs='?', help='service account JSON directory')
 parser.add_argument('--switch-by-config', action='store_true', help='make autorclone switch by config instead of runtime')
 parser.add_argument('--sa-config-name', type=str, help='set rclone config section name for --switch-by-config; req.')
 parser.add_argument('--rclone-bin', type=str, default="/usr/bin/rclone", nargs='?', help='rclone binary path')
-parser.add_argument('--rclone-config', type=str, default="/home/chamber/Desktop/srv_config/config_files/rclone.conf", nargs='?', help='rclone config path')
+parser.add_argument('--rclone-config', type=str, default="/home/opsoyo/.config/rclone/rclone.conf", nargs='?', help='rclone config path')
 parser.add_argument('--rclone-exclude-exts', type=str, nargs='+', help='rclone extension exclude list')
 parser.add_argument('--td-rotate-name', type=str, nargs='?', help='rotate the writable team drive on error')
+parser.add_argument('--save-logs', action='store_true', help='save logs made by autorclone and rclone')
 parser.add_argument('commands', type=str, metavar='cmd', nargs='+', help='rclone command string')
 
 args = parser.parse_args()
@@ -404,6 +416,9 @@ td_rotate_name = args.td_rotate_name
 Path(os.path.dirname(sa_ban_log)).mkdir(parents=True, exist_ok=True)
 Path(sa_ban_log).touch()
 Path(sa_track_log).touch()
+
+# Time between user rate limit errors
+userlimit_first_log_dtm = None
 
 for command in args.commands:
     # Fill out rclone command from arg
@@ -471,6 +486,10 @@ for command in args.commands:
             logger.warning('Lost important param `--log-file` in rclone commands; Autoadd it.')
             cmd_rclone += ' --log-file {}'.format(rclone_log_path)
 
+        if cmd_rclone.find('--fast-list') == -1:
+            logger.warning('Lost important param `--fast-list` in rclone commands; Autoadd it.')
+            cmd_rclone += ' --fast-list'
+
         # ??????
         while True:
             if break_for_next_cmd:
@@ -483,19 +502,19 @@ for command in args.commands:
 
             # avoid using temp banned SA Projects which haven't waited 24 hours
             if is_project_banned(current_sa):
-                logger.warn("Project ID still under 24-hour ban.")
+                logger.warning("Project ID still under 24-hour ban.")
                 continue
             else:
                 logger.info("Project ID is not under a ban.")
 
             # avoid using banned SAs which haven't waited 24 hours
             if is_sa_banned(current_sa):
-                logger.warn("Service account still under 24-hour ban.")
+                logger.warning("Service account still under 24-hour ban.")
                 continue
             else:
                 logger.info("Service account is not under a ban.")
 
-            # avoid using in-use SAs
+            # Avoid using in-use SAs
             if is_sa_being_used(current_sa):
                 logger.info("Service account is unavailable.")
                 continue
@@ -503,20 +522,21 @@ for command in args.commands:
                 logger.info("Service account is available.")
                 update_track_log(current_sa)
 
-            # ??Rclone????
+            # Select SA by config or argument
             if switch_sa_way == 'config':
                 switch_sa_by_config(current_sa)
                 cmd_rclone_current_sa = cmd_rclone
             else:
-                # ??????`runtime`,??'--drive-service-account-file'??
                 cmd_rclone_current_sa = cmd_rclone + ' --drive-service-account-file %s' % (current_sa,)
 
             # Inject rclone union env vars into `proc_env`
             # DOESN'T HANDLE MULTIPLE TDs IF ITERATING THROUGH CMDs
             if td_rotate_name:
                 logger.warning('Injecting Team Drive rotation...')
-                generated_team_drive_union = generate_rclone_union_from_config(td_rotate_name,td_switch_count)
+                generated_team_drive_union = generate_rclone_union_from_config(td_rotate_name)
                 proc_env.update(generated_team_drive_union)
+                #print(generated_team_drive_union)
+                #exit()
 
             # ???subprocess?rclone
             proc_log = open(rclone_log_path, 'a')
@@ -527,18 +547,15 @@ for command in args.commands:
             logger.info('Wait %s seconds to full call rclone command: %s' % (check_after_start, cmd_rclone_current_sa))
             time.sleep(check_after_start)
 
-            # ??pid??
-            # ??,??subprocess???sh,??sh??rclone,??????????sh?pid??
-            # proc.pid + 1 ????????rclone???pid,????
-            # ?????? force_kill_rclone_subproc_by_parent_pid(sh_pid) ????rclone
+            # Hook onto rclone PID if it didn't die early
             if proc.poll() is None:
                 write_config('last_pid', proc.pid)
                 logger.info('Run rclone command Success in pid %s' % (proc.pid))
                 rc_port = get_listen_port(proc.pid)
 
-            # if pid has already died
+            # If pid has already died early
             if proc.poll() != None:
-                logger.warn("Premature death of process.")
+                logger.warning("Premature death of process.")
 
                 force_kill_rclone_subproc(proc.pid)
                 proc.kill()
@@ -573,7 +590,7 @@ for command in args.commands:
                     response = subprocess.check_output('rclone rc --url "http://localhost:{}" core/stats'.format(rc_port), shell=True)
                 except NameError as error:
                     # This is a temporary fix that needs "100%" check from rclone output
-                    logger.warn("Rclone process died before it could be check. Probably not an issue.")
+                    logger.warning("Rclone process died before it could be check. Probably not an issue.")
                     break_for_next_cmd = True
                     break
                 except subprocess.CalledProcessError as error:
@@ -632,14 +649,6 @@ for command in args.commands:
                         should_switch = should_switch + 0.001
                         switch_reason += 'Rule `error_project_quota` hit, '
 
-                # TD Switch: Also switches the SA
-                if rclone_switch_rules.get('error_td_file_limit', False):
-                    last_error = response_json.get('lastError', '')
-                    if last_error.find('teamDriveFileLimitExceeded') > -1:
-                        switch_teamdrives = True
-                        should_switch = (switch_level - should_switch) + should_switch
-                        switch_reason += 'Rule `error_td_file_limit` hit, '
-
                 # SA Switch: 750 GB+
                 if rclone_switch_rules.get('up_than_750', False):
                     if cnt_transfer > 750 * pow(1000, 3):  # ??? 750GB ??? 750GiB
@@ -647,7 +656,7 @@ for command in args.commands:
                         switch_reason += 'Rule `up_than_750` hit, '
 
                 # SA Switch: Zero transferred between check interval
-                #            and no server-side progress (still developing)
+                # and no server-side progress (still developing)
                 if rclone_switch_rules.get('zero_transferred_between_check_interval', False):
                     if cnt_transfer - cnt_transfer_last == 0:  # ???
                         cnt_403_retry += 1
@@ -667,11 +676,40 @@ for command in args.commands:
                         should_switch += 1
                         switch_reason += 'Rule `error_user_rate_limit` hit, '
 
-                # SA Switch: Ratelimit exceeded and zero transferred between checks
-                # ...
+                # SA Switch: 2 minutes of
+                # 'userRateLimitExceeded' and 0 transferred
+                if rclone_switch_rules.get('user_limit_and_zero_data', False):
+                    dtm_pattern = r"((\d{4})\/(\d{2})\/(\d{2}) (\d{2})\:(\d{2})\:(\d{2}))"
+                    latest_five_lines = get_rclone_log_tail(rclone_log_path, 5).splitlines()
+                    is_transferring = False
+                    if response_json.get('transferring', False):
+                        for transfer in response_json['transferring']:
+                            if 'bytes' not in transfer or 'speed' not in transfer:
+                                continue
+                            elif transfer.get('bytes', 0) != 0 and transfer.get('speed', 0) > 0:  # ??????????
+                                is_transferring = True
+                                break
+                    for line in latest_five_lines: # because there are lines that won't match
+                        matches = re.search(dtm_pattern, line)
+                        if 'low level retry' in line and 'userRateLimitExceeded' in line and matches:
+                            if not is_transferring:
+                                match = re.search(dtm_pattern, line)
+                                dtm_log = datetime.datetime.strptime(match.group(), "%Y/%m/%d %H:%M:%S")
+                                if not userlimit_first_log_dtm:
+                                    userlimit_first_log_dtm = dtm_log
+                                else:
+                                    duration = dtm_log - userlimit_first_log_dtm
+                                    duration_seconds = duration.total_seconds()
+                                    if duration_seconds >= 300: # After so many seconds
+                                        should_switch += 1
+                                        switch_reason += 'Rule `user_limit_and_zero_data` hit, '
+                                        userlimit_first_log_dtm = None
+                                        break
+                            else:
+                                userlimit_first_log_dtm = None
 
                 # SA Switch: All transfers in zero
-                #            and no server-side progress (still developing)
+                # and no server-side progress (still developing)
                 if rclone_switch_rules.get('all_transfers_in_zero', False):
                     graceful = True
                     if response_json.get('transferring', False):
@@ -687,7 +725,7 @@ for command in args.commands:
                         switch_reason += 'Rule `all_transfers_in_zero` hit, '
 
                 # Debug
-                logger.info("Should switch count: {}".format(should_switch))
+                logger.debug("Should switch count: {}".format(should_switch))
 
                 # SA and/or TD Switch: Process the switch
                 if should_switch >= switch_level:
@@ -701,9 +739,6 @@ for command in args.commands:
                     # Add project ID to temp ban list
                     if 'error_project_quota' in switch_reason:
                         add_project_ban(current_sa)
-
-                    if switch_teamdrives:
-                        td_switch_count += 1
 
                     if not switch_teamdrives:
                         # update ban log for SAs
@@ -724,28 +759,8 @@ for command in args.commands:
 
 print(get_rclone_log_tail(rclone_log_path, 20))
 
-# clean up garbage log
-logger.info('Cleaning up log file garbage.')
-os.remove(instance_lock_path)
-os.remove(instance_config_path)
-os.remove(rclone_log_path)
-os.remove(script_log_file)
-
-
-
-
-
-
-
-
-
-
-
-
-#if __name__ == '__main__':
-#    parser = argparse.ArgumentParser(description="Process command line arguments for " + __file__)
-#    parser.add_argument('-C','--cmd', type=str, required=True, nargs='?', help='rclone command string')
-#
-#    args = parser.parse_args()
-#
-#    sys.exit(main(args.cmd))
+# Clean up logs unless told to save
+if not args.save_logs:
+    log_cleanup()
+else:
+    logger.info('Log paths: ....')
